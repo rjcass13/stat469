@@ -1,0 +1,77 @@
+---
+title: HW0 LA Review in R
+author: RJ Cass
+format: pdf
+---
+
+```{r}
+library('ggplot2')
+library('dplyr')
+library('car')
+library('lmtest')
+data <- read.table("BirthWeights.txt", sep = " ", header = TRUE, as.is = FALSE)
+```
+
+# 1. 
+
+```{r}
+mod <- lm(BirthWeight ~ Mage + Gage, data = data)
+avPlots(mod)
+```
+
+# 2. 
+
+```{r}
+mod <- lm(BirthWeight ~ ., data = data)
+hist(rstandard(mod), freq = FALSE, breaks = seq(from = -3.5, to = 3.5, by = .2))
+curve(dnorm(x), add = TRUE, col = 'red')
+
+ks.test(rstandard(mod), "pnorm")
+```
+
+# 3. 
+
+```{r}
+bp <- bptest(mod)
+p_val <- bp$p.value
+p_label <- paste("BP Test p-value:", format.pval(p_val, digits = 3))
+plot(mod$fitted.values, mod$residuals)
+mtext(p_label, side = 3, line = -1, font = 2, col = 'blue')
+```
+
+# 4. 
+
+```{r}
+summary(mod)$r.squared
+```
+
+# 5. 
+
+```{r}
+cross_validate <- function(fold_num){
+    cv_data <- data[folds == fold_num, ]
+    cv_mod <- lm(BirthWeight ~ ., data = cv_data)
+    rmse <- sqrt(mean(cv_mod$residuals^2))
+    rmse
+}
+
+set.seed(1337)
+K <- 20
+folds <- rep(1:K, length = nrow(data)) %>% #Rep K folds n times
+    sample()
+## Using sapply()
+rmse_results <- sapply(1:K, FUN=cross_validate)
+
+## Using lapply()
+# rmse_results <- lapply(1:K, FUN=cross_validate) %>%
+#     unlist()
+
+## EVEN FASTER/BETTER/COOLER do the CV in parallel!
+# library(parallel)
+# rmse_results <- mclapply(1:K,FUN=cross_validate,mc.cores=detectCores()) %>%
+#    unlist()
+# Parallel does not work built-in in the current version of Positron
+
+## Plot the Results
+ggplot() + geom_histogram(mapping=aes(x=rmse_results))
+```

@@ -1,0 +1,49 @@
+---
+title: HW0 LA Review in R
+author: RJ Cass
+format: pdf
+---
+
+```{r, message = FALSE}
+library('dplyr')
+data <- read.table("BirthWeights.txt", sep = " ", header = TRUE, as.is = FALSE)
+```
+
+# 1. 
+
+```{r}
+# Design matrix
+X <- model.matrix(~ Mage + Gage + Race + Gen, data = data)
+y <- matrix(data[, 1], ncol = 1)
+
+# beta = (X'X)^(-1)*X'y
+beta <- solve(t(X) %*% X) %*% t(X) %*% y
+
+# S2
+n <- nrow(X)
+p <- ncol(X)
+resids <- y - (X %*% beta)
+S2 <- sum(resids^2) / (n-p)
+
+lm <- lm(BirthWeight ~ ., data = data)
+
+beta
+lm$coefficients
+
+S2
+summary(lm)$sigma^2
+```
+
+# 2. 
+
+```{r}
+# Manual vs. LM
+table(round(X %*% beta, 3) == round(lm$fitted.values, 3))
+```
+
+# 3. 
+
+```{r}
+# Manual vs. LM
+table(round(y - X%*%beta, 3) == round(lm$residuals, 3))
+```

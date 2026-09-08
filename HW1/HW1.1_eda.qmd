@@ -1,0 +1,51 @@
+---
+title: HW0 LA Review in R
+author: RJ Cass
+format: pdf
+---
+
+```{r}
+library('ggplot2')
+library('dplyr')
+data <- read.table("BirthWeights.txt", sep = " ", header = TRUE, as.is = FALSE)
+```
+
+# 1. 
+
+```{r}
+lm <- lm(BirthWeight ~ Mage, data = data)
+
+plot(data$Mage, data$BirthWeight)
+abline(lm, col="blue", lwd=2)
+```
+
+
+# 2. 
+
+```{r}
+boxplot(BirthWeight ~ Race, data = data)
+```
+
+
+# 3. 
+
+```{r}
+ggplot(data, aes(x = Gage, y = BirthWeight, color = Race)) +
+  geom_point(alpha = 0.6) +              # Plot scatter points with slight transparency
+  geom_smooth(method = "lm", se = FALSE) # Add linear model lines without standard error shading
+```
+
+# 4. 
+
+```{r}
+data %>%
+  group_by(Gen) %>%
+  summarise(correlation = cor(BirthWeight, Mage))
+```
+
+
+# 5. 
+
+```{r}
+GGally::ggpairs(data)
+```
