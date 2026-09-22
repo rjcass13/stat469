@@ -62,16 +62,6 @@ folds <- rep(1:K, length = nrow(data)) %>% #Rep K folds n times
 ## Using sapply()
 rmse_results <- sapply(1:K, FUN=cross_validate)
 
-## Using lapply()
-# rmse_results <- lapply(1:K, FUN=cross_validate) %>%
-#     unlist()
-
-## EVEN FASTER/BETTER/COOLER do the CV in parallel!
-# library(parallel)
-# rmse_results <- mclapply(1:K,FUN=cross_validate,mc.cores=detectCores()) %>%
-#    unlist()
-# Parallel does not work built-in in the current version of Positron
-
 ## Plot the Results
 ggplot() + geom_histogram(mapping=aes(x=rmse_results))
 ```
