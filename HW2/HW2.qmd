@@ -1,0 +1,92 @@
+---
+title: HW2
+author: RJ Cass
+format: pdf
+---
+
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(patchwork))
+
+dt <- read.csv('website.csv')
+```
+
+# 1
+
+### (a)
+
+```{r}
+p11 <- ggplot(dt, aes(x = Budget, y = Visits)) +
+    geom_point() + 
+    geom_smooth(method = "lm", se = TRUE) 
+p11
+```
+
+
+### (b)
+
+```{r}
+p12 <- ggplot(dt, aes(x = Visits, y = AdType, fill = AdType)) +
+    geom_violin(draw_quantiles=c(0.25, .5, .75))
+p12
+```
+
+Plotted together
+
+```{r}
+p11 + p12
+```
+
+### (c)
+
+```{r}
+mod_budget <- lm(Visits ~ Budget, data = dt)
+mod_adtype <- lm(Visits ~ AdType, data = dt)
+mod_full <- lm(Visits ~ Budget + AdType, data = dt)
+
+summary(mod_full)
+anova(mod_budget, mod_full)
+anova(mod_adtype, mod_full)
+```
+
+AdType does appear to be significant. Budget does not appear to be significant. 
+
+### (d)
+
+Linearity
+```{r}
+car::avPlots(mod_full, terms = ~Budget)
+```
+
+```{r}
+p141 <- ggplot(dt, aes(x = (Budget - mean(Budget)), y = (Visits - mean(Visits)))) + 
+    geom_point() + 
+    labs(x = "Adjusted Budget", y = "Adjusted Visits")
+p142 <- ggplot(dt, aes(x = fitted(mod_full), y = MASS::stdres(mod_full))) + 
+    geom_point()
+p143 <- ggplot(dt, aes(x = MASS::stdres(mod_full))) + 
+    geom_density()
+
+p141 / (p142 + p143)
+```
+
+
+### (e)
+
+```{r}
+p151 <- ggplot(dt, aes(x = log(Budget), y = Visits)) +
+    geom_point() + 
+    geom_smooth() 
+p152 <- ggplot(dt, aes(x = Budget, y = log(Visits))) +
+    geom_point() + 
+    geom_smooth() 
+p153 <- ggplot(dt, aes(x = log(Budget), y = log(Visits))) +
+    geom_point() + 
+    geom_smooth() 
+p154 <- ggplot(dt, aes(x = sqrt(Budget), y = log(Visits))) +
+    geom_point() + 
+    geom_smooth() 
+
+
+(p151 + p152) / (p153 + p154)
+```
