@@ -5,18 +5,20 @@ format: pdf
 ---
 
 ```{r}
-suppressPackageStartupMessages(library(ggplot2))
-suppressPackageStartupMessages(library(patchwork))
-
-dt <- read.csv('website.csv')
+suppressPackageStartupMessages(library('ggplot2'))
+suppressPackageStartupMessages(library('patchwork'))
+suppressPackageStartupMessages(library('gamlss'))
+suppressPackageStartupMessages(library('lmtest'))
+suppressPackageStartupMessages(library('dplyr'))
+web <- read.csv('website.csv')
 ```
 
-# 1
+# HW 2.1
 
 ### (a)
 
 ```{r}
-p11 <- ggplot(dt, aes(x = Budget, y = Visits)) +
+p11 <- ggplot(web, aes(x = Budget, y = Visits)) +
     geom_point() + 
     geom_smooth(method = "lm", se = TRUE) 
 p11
@@ -26,7 +28,7 @@ p11
 ### (b)
 
 ```{r}
-p12 <- ggplot(dt, aes(x = Visits, y = AdType, fill = AdType)) +
+p12 <- ggplot(web, aes(x = Visits, y = AdType, fill = AdType)) +
     geom_violin(draw_quantiles=c(0.25, .5, .75))
 p12
 ```
@@ -40,9 +42,9 @@ p11 + p12
 ### (c)
 
 ```{r}
-mod_budget <- lm(Visits ~ Budget, data = dt)
-mod_adtype <- lm(Visits ~ AdType, data = dt)
-mod_full <- lm(Visits ~ Budget + AdType, data = dt)
+mod_budget <- lm(Visits ~ Budget, data = web)
+mod_adtype <- lm(Visits ~ AdType, data = web)
+mod_full <- lm(Visits ~ Budget + AdType, data = web)
 
 summary(mod_full)
 anova(mod_budget, mod_full)
@@ -59,12 +61,12 @@ car::avPlots(mod_full, terms = ~Budget)
 ```
 
 ```{r}
-p141 <- ggplot(dt, aes(x = (Budget - mean(Budget)), y = (Visits - mean(Visits)))) + 
+p141 <- ggplot(web, aes(x = (Budget - mean(Budget)), y = (Visits - mean(Visits)))) + 
     geom_point() + 
     labs(x = "Adjusted Budget", y = "Adjusted Visits")
-p142 <- ggplot(dt, aes(x = fitted(mod_full), y = MASS::stdres(mod_full))) + 
+p142 <- ggplot(web, aes(x = fitted(mod_full), y = MASS::stdres(mod_full))) + 
     geom_point()
-p143 <- ggplot(dt, aes(x = MASS::stdres(mod_full))) + 
+p143 <- ggplot(web, aes(x = MASS::stdres(mod_full))) + 
     geom_density()
 
 p141 / (p142 + p143)
@@ -74,19 +76,135 @@ p141 / (p142 + p143)
 ### (e)
 
 ```{r}
-p151 <- ggplot(dt, aes(x = log(Budget), y = Visits)) +
+p151 <- ggplot(web, aes(x = log(Budget), y = Visits)) +
     geom_point() + 
     geom_smooth() 
-p152 <- ggplot(dt, aes(x = Budget, y = log(Visits))) +
+p152 <- ggplot(web, aes(x = Budget, y = log(Visits))) +
     geom_point() + 
     geom_smooth() 
-p153 <- ggplot(dt, aes(x = log(Budget), y = log(Visits))) +
+p153 <- ggplot(web, aes(x = log(Budget), y = log(Visits))) +
     geom_point() + 
     geom_smooth() 
-p154 <- ggplot(dt, aes(x = sqrt(Budget), y = log(Visits))) +
+p154 <- ggplot(web, aes(x = sqrt(Budget), y = log(Visits))) +
     geom_point() + 
     geom_smooth() 
 
 
 (p151 + p152) / (p153 + p154)
+```
+
+# HW 2.2
+
+### (a)
+
+```{r}
+gam_mod <- gamlss(Visits ~ Budget + AdType, sigma.formula = ~ Budget, data = web)
+```
+
+Estimates for the $\beta$s
+
+```{r}
+coef(gam_mod, what = "mu") # Mean model coefficients (betas) 
+```
+
+Estimates for $\theta_0$ and $\theta_1$
+
+```{r}
+coef(gam_mod, what = "sigma") # Variance model coefficients 
+```
+
+
+### (b)
+
+I added in a grid to start over to demonstrate the change point where it starts converging to the different peaks. 
+
+```{r}
+multi_modal <- function(x) {
+    # Parameters for the first peak
+    mean1 <- -2
+    sd1 <- 1
+    peak1 <- dnorm(x, mean = mean1, sd = sd1)
+
+    # Parameters for the second peak
+    mean2 <- 2
+    sd2 <- .5
+    peak2 <- dnorm(x, mean = mean2, sd = sd2)
+
+    # Sum of both peaks
+    peak1 + peak2
+}
+
+start <- seq(-2.5, 2.5, by = .1)
+end <- unlist(lapply(start, \(x) optim(x, multi_modal, method = "L-BFGS-B", control = list(fnscale = -1))$par))
+
+ggplot(NULL, aes(x = start, y = end)) + 
+    geom_point() + 
+    labs(x = "Start Position", y = "End Estimate")
+```
+
+# HW 2.3
+
+### (a)
+
+```{r}
+car::avPlots(mod_full, terms = ~Budget)
+```
+
+### (b)
+
+```{r}
+resids <- residuals(gam_mod)
+resids <- as.data.frame(x = resids)
+ggplot(data = resids, aes(x=resids)) + 
+    geom_histogram(aes(y = after_stat(density))) + 
+    stat_function(fun = dnorm, color = "red", linewidth = 1.2)
+ks.test(resids$resids, "pnorm")
+```
+
+### (c)
+
+```{r}
+res_squared <- residuals(gam_mod)^2
+aux_mod <- lm(res_squared ~ Budget + AdType, data = web)
+
+bp <- bptest(aux_mod) 
+p_val <- bp$p.value
+p_label <- paste("BP Test p-value:", format.pval(p_val, digits = 3))
+
+fits <- fitted(gam_mod, what = "mu")
+ggplot(NULL, aes(x = fits, y = resids$resids)) + 
+    geom_point() + 
+    labs(x = "fitted", y = "resids") + 
+    annotate("text", x = median(fits), y = Inf, label = p_label, vjust = 1.5, color = "blue")
+```
+
+### (d)
+
+```{r}
+Rsq(gam_mod, type = c("Cox Snell"))
+```
+
+### (e)
+
+```{r}
+cross_validate <- function(fold_num) { 
+    train_dt <- web[folds != fold_num, ]
+    val_dt <- web[folds == fold_num, ]
+    cv_mod <- gamlss(Visits ~ Budget + AdType, sigma.formula = ~ Budget, data = train_dt, trace = FALSE, environment = environment())
+    preds <- predict(cv_mod, what = "mu", data = train_dt, newdata = val_dt, type = "response")
+    raw_resids <- val_dt$Visits - preds
+    rmse <- sqrt(mean(raw_resids^2))
+    rmse
+}
+
+set.seed(1337)
+K <- 25
+folds <- rep(1:K, length = nrow(web)) %>% #Rep K folds n times
+    sample()
+## Using sapply()
+rmse_results <- sapply(1:K, FUN=cross_validate)
+
+## Plot the Results
+ggplot() + 
+    geom_density(mapping=aes(x=rmse_results))
 ```
