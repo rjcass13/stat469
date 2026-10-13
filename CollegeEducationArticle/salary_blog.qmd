@@ -1,0 +1,380 @@
+---
+title: "Major Decisions: Your Field of Study Shapes Your Paycheck Far More Than Your GPA"
+subtitle: "We looked at what 773 college graduates earn five years after graduation. Grades help a little. Your major helps a lot. And the pay gap between men and women shows up almost everywhere."
+author:
+  - Bracken Sant
+  - RJ Cass
+  - Tyler Barlow
+date: today
+date-format: "MMMM D, YYYY"
+format:
+  pdf:
+    documentclass: article
+    geometry: margin=1in
+    fontsize: 11pt
+    mainfont: Arial
+    linestretch: 1.15
+    number-sections: false
+    toc: false
+    fig-pos: 'htb'
+    keep-tex: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: cairo_pdf
+    fig.align: center
+header-includes:
+  - \usepackage{float}
+  - \renewcommand{\topfraction}{0.85}
+  - \renewcommand{\bottomfraction}{0.85}
+  - \renewcommand{\textfraction}{0.1}
+  - \renewcommand{\floatpagefraction}{0.85}
+---
+
+```{r setup}
+# ---- Packages, data, and the model (identical to the documentation) ----------------
+library(dplyr)
+library(ggplot2)
+
+dat <- vroom::vroom("Salary.csv", show_col_types = FALSE) |>
+  mutate(MajorCategory = factor(MajorCategory),
+         Sex           = factor(Sex, levels = c("F", "M")))
+
+our_major <- "Computers & Mathematics"  # Statistics lives in this category
+gpa_ref   <- 3.3                        # "typical" GPA used for comparisons
+
+majors  <- levels(dat$MajorCategory)
+n_major <- as.numeric(table(dat$MajorCategory))
+w       <- n_major / sum(n_major)       # each major's share of graduates
+
+# The one model behind every number in the article
+fit <- lm(Salary ~ MajorCategory * GPA + MajorCategory * Sex, data = dat)
+
+# ---- Helpers (same as the documentation) --------------------------------------------
+# Row of the X matrix for a hypothetical graduate
+xrow <- function(major, sex, gpa) {
+  newdata <- data.frame(MajorCategory = factor(major, levels = majors),
+                        Sex           = factor(sex, levels = c("F", "M")),
+                        GPA           = gpa)
+  model.matrix(delete.response(terms(fit)), newdata)
+}
+
+# Estimate and 95% confidence interval for each row of a contrast matrix K
+lin_combo <- function(K, label) {
+  g  <- multcomp::glht(fit, linfct = K)
+  ci <- confint(g, calpha = multcomp::univariate_calpha())$confint
+  data.frame(Label = label, Estimate = ci[, "Estimate"],
+             Lower = ci[, "lwr"], Upper = ci[, "upr"], row.names = NULL)
+}
+
+# ---- Quantities quoted in the article ------------------------------------------------
+K_slope <- xrow(majors, "F", 1) - xrow(majors, "F", 0)              # GPA slope by major
+K_gap   <- xrow(majors, "M", gpa_ref) - xrow(majors, "F", gpa_ref)  # men - women by major
+K_mean  <- (xrow(majors, "F", gpa_ref) + xrow(majors, "M", gpa_ref)) / 2  # mean salary
+
+slopes      <- lin_combo(K_slope, majors) |> mutate(n = n_major)
+gaps        <- lin_combo(K_gap, majors)   |> mutate(n = n_major)
+major_means <- lin_combo(K_mean, majors)  |> mutate(n = n_major) |>
+  arrange(desc(Estimate))                 # ranked from highest to lowest paying
+
+avg_slope <- lin_combo(t(w) %*% K_slope, "Average GPA slope")   # averaged over grads
+avg_gap   <- lin_combo(t(w) %*% K_gap, "Average gap")
+
+# Highest-paying major minus lowest-paying major
+top    <- major_means$Label[1]
+bottom <- major_means$Label[nrow(major_means)]
+top_vs_bottom <- lin_combo(
+  K_mean[majors == top, , drop = FALSE] - K_mean[majors == bottom, , drop = FALSE],
+  "Top minus bottom")
+
+# Our own major: women, men, and the gap
+ours_f   <- lin_combo(xrow(our_major, "F", gpa_ref), "Women")
+ours_m   <- lin_combo(xrow(our_major, "M", gpa_ref), "Men")
+ours_gap <- gaps[gaps$Label == our_major, ]
+
+# Prediction for one specific person (95% prediction interval)
+example <- data.frame(MajorCategory = our_major, Sex = "F", GPA = 3.5)
+ex_pred <- predict(fit, newdata = example, interval = "prediction", level = 0.95)
+
+# 10-fold cross-validation: how far off are predictions for unseen graduates?
+set.seed(469)
+k     <- 10
+folds <- sample(cut(seq(1, nrow(dat)), breaks = k, labels = FALSE))
+cv <- do.call(rbind, lapply(1:k, function(i) {
+  f <- lm(formula(fit), data = dat[folds != i, ])
+  cbind(Salary = dat$Salary[folds == i],
+        predict(f, newdata = dat[folds == i, ], interval = "prediction"))
+})) |> as.data.frame()
+cv_rmse  <- sqrt(mean((cv$Salary - cv$fit)^2))
+cv_cover <- mean(cv$Salary >= cv$lwr & cv$Salary <= cv$upr)
+
+# Share of salary differences explained (R-squared), overall and by major alone
+r2_all   <- summary(fit)$r.squared
+r2_major <- summary(lm(Salary ~ MajorCategory, data = dat))$r.squared
+
+# ---- Formatting helpers for the text -------------------------------------------------
+# Dollars rounded to the nearest $100, e.g. "$5,200" (the "\\$" keeps LaTeX happy)
+usd <- function(x, to = 100) {
+  paste0("\\$", format(round(x / to) * to, big.mark = ",", trim = TRUE,
+                       scientific = FALSE))
+}
+rng <- function(est) paste0(usd(est$Lower), " to ", usd(est$Upper))  # "$a to $b"
+pct <- function(x) paste0(round(100 * x), "%")
+```
+
+```{r plot-style}
+# ---- Look and feel shared by every figure --------------------------------------------
+ink    <- "#0b0b0b"   # primary text
+ink2   <- "#52514e"   # secondary text
+muted  <- "#898781"   # context marks and captions
+grid   <- "#e1e0d9"   # hairline gridlines
+blue   <- "#2a78d6"   # the one accent color
+
+theme_blog <- function() {
+  theme_minimal(base_size = 10) +
+    theme(text               = element_text(color = ink),
+          plot.title         = element_text(face = "bold", size = 12),
+          plot.subtitle      = element_text(color = ink2, size = 9.5,
+                                            margin = margin(b = 8)),
+          plot.caption       = element_text(color = muted, size = 8, hjust = 0,
+                                            margin = margin(t = 8)),
+          plot.title.position   = "plot",
+          plot.caption.position = "plot",
+          axis.text          = element_text(color = ink2),
+          axis.title         = element_text(color = ink2, size = 9),
+          panel.grid.minor   = element_blank(),
+          panel.grid.major   = element_line(color = grid, linewidth = 0.3),
+          plot.margin        = margin(6, 16, 6, 6))
+}
+
+source_note <- "Source: American Community Survey Public Use Microdata, 773 graduates."
+bar_note    <- paste0("Bars show the 95% margin of error. ",
+                      "Number of graduates in parentheses.\n", source_note)
+
+# Ranked dot chart with a margin-of-error bar for each major. Majors named in
+# `highlight` are drawn in the accent color and the rest in gray.
+dot_chart <- function(df, highlight = df$Label) {
+  df |>
+    mutate(is_hl = Label %in% highlight,
+           Axis  = reorder(paste0(Label, " (", n, ")"), Estimate)) |>
+    ggplot(aes(y = Axis, color = is_hl)) +
+    geom_linerange(aes(xmin = Lower, xmax = Upper), linewidth = 0.8) +
+    geom_point(aes(x = Estimate), size = 2.6) +
+    scale_color_manual(values = c(`TRUE` = blue, `FALSE` = muted), guide = "none") +
+    scale_x_continuous(labels = scales::label_dollar()) +
+    labs(y = NULL) +
+    theme_blog() +
+    theme(panel.grid.major.y = element_blank())
+}
+```
+
+It's 2 a.m.\ during finals week. You are three energy drinks deep, staring down an exam, and convinced that the difference between an A-minus and a B-plus will follow your bank account around for the rest of your life.
+
+Take a breath. We have data.
+
+We looked at `r nrow(dat)` college graduates from the American Community Survey: what they studied, their GPA, whether they are a man or a woman, and what they were earning five years after graduation. The typical graduate in our data earns about `r usd(median(dat$Salary))` a year, but individual salaries run from `r usd(min(dat$Salary))` all the way to `r usd(max(dat$Salary))`. We
+wanted to know what explains that spread:
+
+- Does a higher GPA actually pay off?
+- Which majors earn the most?
+- Do women and men with the same major earn the same?
+- How much of your salary do those three things leave unexplained?
+
+The short version: **your major matters a lot, your GPA matters a little, and men out-earn women in nearly every field we looked at.** The longer version is below.
+
+One note before we start. We are working with a sample of graduates, not every graduate in America, so every number here comes with a margin of error. When you see a range in parentheses, or a horizontal bar on a chart, that is the range we are 95% confident contains the true value. Narrow ranges mean we are sure. Wide ranges mean "take this one with a grain of salt."
+
+## Impact of GPA: Good Grades Pay, but Only a Little
+
+Good news for the honor roll: grades do pay. Comparing graduates in the same major and of the same sex, each additional full point of GPA goes with about **`r usd(avg_slope$Estimate)` more in annual
+salary** (`r rng(avg_slope)`).
+
+That sounds like real money until you remember how big a full GPA point is. It is the difference between a C-plus student and a B-plus student. A more realistic improvement of half a point is worth about `r usd(avg_slope$Estimate / 2)` a year, and the tenth of a point you are agonizing over at 2 a.m.\ is worth roughly `r usd(avg_slope$Estimate / 10, to = 10)`.
+
+```{r fig-gpa-scatter, fig.width=6.5, fig.height=3.4}
+# Figure 1: every graduate's salary against GPA, with the average trend from the model.
+# The line passes through the point of averages with the average GPA slope.
+b1 <- avg_slope$Estimate
+b0 <- mean(dat$Salary) - b1 * mean(dat$GPA)
+
+ggplot(dat, aes(GPA, Salary)) +
+  geom_point(color = muted, alpha = 0.45, size = 1.3) +
+  geom_abline(intercept = b0, slope = b1, color = blue, linewidth = 0.9) +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(title = "Higher grades, slightly higher pay, and a whole lot of scatter",
+       subtitle = paste0("Each dot is one graduate. Blue line: the average trend, ",
+                         "about +", scales::dollar(round(b1, -2)), " per GPA point"),
+       x = "College GPA", y = "Annual salary", caption = source_note) +
+  theme_blog()
+```
+
+```{r gpa-ranges}
+# Salary ranges for the highest- and lowest-GPA graduates, quoted in the text
+hi_gpa <- range(dat$Salary[dat$GPA >= 3.7])
+lo_gpa <- range(dat$Salary[dat$GPA < 3.0])
+```
+
+**So should students be hyper-anxious about grades? We don't think so.** Look at how spread out the
+dots are in @fig-gpa-scatter. Graduates with a 3.7 GPA or better earn anywhere from `r usd(hi_gpa[1])` to `r usd(hi_gpa[2])`. Graduates below a 3.0 earn anywhere from `r usd(lo_gpa[1])` to `r usd(lo_gpa[2])`. Those two ranges overlap quite a lot. Grades nudge your salary: they do not decide it. Work hard, learn the material, and then go to bed.
+
+### Does GPA matter more in some majors?
+
+It does. The payoff from good grades is not the same in every field (@fig-gpa-by-major), and the differences are bigger than we would expect from chance alone.
+
+```{r fig-gpa-by-major, fig.width=6.5, fig.height=4.2}
+# Figure 2: what one GPA point is worth in each major, with margins of error
+dot_chart(slopes) +
+  geom_vline(xintercept = 0, color = ink2, linewidth = 0.4) +
+  geom_vline(xintercept = avg_slope$Estimate, color = muted, linewidth = 0.4) +
+  labs(title = "What one extra GPA point is worth, by major",
+       subtitle = paste0("Extra annual salary per GPA point. Gray line: average across",
+                         " all graduates (", scales::dollar(round(b1, -2)), ")"),
+       x = "Extra salary per GPA point",
+       caption = bar_note)
+```
+
+```{r gpa-major-picks}
+# Majors called out in the text
+s_top  <- slopes |> arrange(desc(Estimate)) |> slice(1)
+s_bus  <- slopes[slopes$Label == "Business", ]
+s_ours <- slopes[slopes$Label == our_major, ]
+```
+
+Grades seem to matter most in `r s_top$Label`, where an increase of one GPA point comes with an increase in salary of about `r usd(s_top$Estimate)` (`r rng(s_top)`), and in Business it results in an increase of about `r usd(s_bus$Estimate)` (`r rng(s_bus)`). At the other end, in `r our_major` the salary increase is only about `r usd(s_ours$Estimate)`, and the margin of error is wide enough that the true payoff could be zero.
+
+A word of caution: the bars for small majors are very wide. We have only 13 graduates in Agriculture & Natural Resources and 11 in Interdisciplinary studies, so for those fields we cannot tell you definitively whether grades have any impact. Also keep in mind that we are comparing different people with different GPAs, not watching one person raise their grades, so these numbers describe a pattern rather than a guarantee (correlation, not causation).
+
+## Salaries Across Majors: The Major Players
+
+If GPA is a nudge, your major is a shove.
+
+To make a fair comparison, we estimated the average salary in each major for a graduate with a `r gpa_ref` GPA (a B-plus, and the average in our data), splitting the difference between women and men. @fig-majors shows the ranking.
+
+```{r fig-majors, fig.width=6.5, fig.height=4.6}
+# Figure 3: average salary by major at a 3.3 GPA (averaged over women and men).
+# The dollar value is printed to the right of each bar, like a table column.
+label_x <- max(major_means$Upper) + 2500
+
+dot_chart(major_means) +
+  geom_text(aes(x = label_x, label = scales::dollar(round(Estimate, -2))),
+            color = ink2, size = 2.9, hjust = 0) +
+  scale_x_continuous(labels = scales::label_dollar(),
+                     breaks = seq(70000, 110000, by = 10000),
+                     limits = c(NA, label_x + 9000)) +
+  labs(title = "Engineering leads the pack; arts and education trail",
+       subtitle = "Average salary five years out for a graduate with a 3.3 GPA",
+       x = "Average annual salary",
+       caption = bar_note)
+```
+
+```{r major-picks}
+# Shorthand for the i-th ranked major in the text
+mm <- function(i) major_means[i, ]
+n_maj <- nrow(major_means)
+```
+
+**`r top` salaries are in a league of their own** at about `r usd(mm(1)$Estimate)` (`r rng(mm(1))`). That is roughly `r usd(mm(1)$Estimate - mm(2)$Estimate, to = 1000)` ahead of the next two fields: `r mm(2)$Label` (`r usd(mm(2)$Estimate)`) and `r mm(3)$Label` (`r usd(mm(3)$Estimate)`). `r mm(4)$Label` and `r mm(5)$Label` round out the top five.
+
+At the other end of the spectrum, `r mm(n_maj)$Label`, `r mm(n_maj - 1)$Label`, `r mm(n_maj - 2)$Label`, `r mm(n_maj - 3)$Label`, and `r mm(n_maj - 4)$Label` graduates all land between about `r usd(mm(n_maj)$Estimate, to = 1000)` and `r usd(mm(n_maj - 4)$Estimate, to = 1000)`.
+
+The gap between the top and the bottom of the range is about **`r usd(top_vs_bottom$Estimate)` a year** (`r rng(top_vs_bottom)`). To put that in GPA terms, it would require abot `r round(top_vs_bottom$Estimate / avg_slope$Estimate)` extra GPA points to make up that difference (which as you can guess doesn't work well on a 4.0 scale). This lines up with a Federal Reserve Bank of New York analysis reported by CNBC, which also found engineering majors at the top of the early-career pay scale and education and arts majors near the bottom.
+
+None of this means anyone picked the "wrong" major. Teachers, artists, and social workers do essential, often fulfilling work, and a paycheck is only one reason to choose a career. But if salary is high on your list, the choice of major will matter far more than the difference between getting an A or a B on your exam.
+
+## Salaries for Women and Men: Same Major, Same Grades, Different Paycheck
+
+Next we compared women and men who have the same major and the same GPA. If pay depended only on
+what you studied and how well you did, the difference should be zero.
+
+Unfortunately, it is not. In all `r nrow(gaps)` major categories, we indicate that men earn more than women. Averaged across fields, the gap is about **`r usd(avg_gap$Estimate)` a year** (`r rng(avg_gap)`). @fig-gap shows the gap field by field.
+
+```{r fig-gap, fig.width=6.5, fig.height=4.5}
+# Figure 4: men's average salary minus women's, same major and GPA. Our own major is
+# highlighted in blue; the others are gray context.
+dot_chart(gaps, highlight = our_major) +
+  geom_vline(xintercept = 0, color = ink2, linewidth = 0.4) +
+  annotate("text", x = 250, y = 16.9, label = "No gap", hjust = 0, size = 2.8,
+           color = ink2) +
+  scale_y_discrete(expand = expansion(add = c(0.6, 1.3))) +   # room for the label
+  labs(title = "Our best estimate favors men in every field, but the gap varies",
+       subtitle = paste0("How much more men earn than women with the same major and GPA.",
+                         " Blue: our own field"),
+       x = "Men's salary minus women's salary",
+       caption = bar_note)
+```
+
+```{r gap-picks}
+# Majors called out in the text
+g_sorted <- gaps |> arrange(desc(Estimate))
+g_big    <- g_sorted[1, ]
+g_small  <- g_sorted[nrow(g_sorted), ]
+n_clear  <- sum(gaps$Lower > 0)   # majors whose margin of error stays above zero
+```
+
+In `r n_clear` of the `r nrow(gaps)` fields, the confidence interval does not include 0 so we are confident the gap is real. In the other `r nrow(gaps) - n_clear`, the bar crosses the "no gap" line so we cannot rule out equal pay (in some cases this is due to low counts of graduates which results in wide intervals; in the other cases it's due to low a estimated difference in salary).
+
+**Does the gap depend on the major? Yes.** It is widest in `r g_big$Label`, where men earn about `r usd(g_big$Estimate)` more (`r rng(g_big)`), and nearly as wide in `r g_sorted$Label[2]`, `r g_sorted$Label[3]`, and `r g_sorted$Label[4]`. It is smallest in `r g_small$Label`, at about `r usd(g_small$Estimate)`, where the margin of error comfortably includes zero.
+
+### What about our own field?
+
+As statisticians, our degrees fall under `r our_major`. Five years out, a woman in our field with a `r gpa_ref` GPA earns about `r usd(ours_f$Estimate)` on average. A man with the same GPA earns about `r usd(ours_m$Estimate)`. That is a gap of roughly **`r usd(ours_gap$Estimate)` a year** (`r rng(ours_gap)`). It is a little smaller than the average gap across all fields, and with only `r ours_gap$n` graduates from our field in the data the range is wide, but the best estimate is still several thousand dollars a year for the same degree and the same grades.
+
+What we cannot tell you is *why*. Our data do not include job title, industry, hours worked, or location, so we cannot say this is unequal pay for identical work. What we can say is that major and grades do not sufficiently explain the difference.
+
+## Can We Predict What You'll Earn?
+
+So how well do major, GPA, and sex determine what you will earn? Better than you might guess, and not nearly well enough to plan your budget.
+
+Together, the three account for about **`r pct(r2_all)` of the differences in salary** between graduates. Your major choice does most of that work: on its own it accounts for about `r pct(r2_major)`.
+
+Here is what that looks like for one person. Take a woman who majored in `r our_major` and graduated with a 3.5 GPA. Our best guess for her salary five years out is **`r usd(ex_pred[1, "fit"])`**. But graduates who look exactly like her on paper do not all earn the same, so the honest answer is a range: she will most likely earn somewhere between **`r usd(ex_pred[1, "lwr"])` and `r usd(ex_pred[1, "upr"])`**. That is a window about `r usd(ex_pred[1, "upr"] - ex_pred[1, "lwr"], to = 1000)` wide.
+
+We also checked how well these predictions hold up on graduates we set aside and did not use to build our estimates. Our guesses were typically off by about `r usd(cv_rmse)`, and the ranges contained the graduate's actual salary about `r pct(cv_cover)` of the time. @fig-prediction shows every graduate's actual salary next to our best guess.
+
+```{r fig-prediction, fig.width=6.5, fig.height=3.6}
+# Figure 5: actual salary against our best guess. The diagonal is a perfect guess and
+# the shaded band is the average size of the 95% prediction range.
+pred_df   <- data.frame(guess = fitted(fit), actual = dat$Salary)
+pi_all    <- predict(fit, interval = "prediction", level = 0.95)
+half_band <- mean(pi_all[, "upr"] - pi_all[, "fit"])   # average +/- of the range
+in_band   <- mean(abs(pred_df$actual - pred_df$guess) <= half_band)
+
+ggplot(pred_df, aes(guess, actual)) +
+  geom_ribbon(aes(ymin = guess - half_band, ymax = guess + half_band),
+              fill = blue, alpha = 0.12) +
+  geom_point(color = muted, alpha = 0.5, size = 1.3) +
+  geom_abline(intercept = 0, slope = 1, color = blue, linewidth = 0.9) +
+  scale_x_continuous(labels = scales::label_dollar()) +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(title = "Our best guess is good, but nobody lands exactly on the line",
+       subtitle = paste0("Each dot is one graduate. Shaded band: our guess, give or ",
+                         "take ", scales::dollar(round(half_band, -2)), " (about ",
+                         round(100 * in_band), "% of graduates fall inside)"),
+       x = "Our best guess from major, GPA, and sex", y = "Actual annual salary",
+       caption = source_note) +
+  theme_blog()
+```
+
+# Other Factors: What Our Data Can't See
+
+A difference in prediction of as much as `r usd(half_band, to = 1000)` in either direction is a lot of rent. What else is going on? Our data cannot say, but the usual suspects are easy to list:
+
+- **Where you live.** The same job pays very differently in San Francisco compared to Des Moines.
+- **Your industry and job title.** A math major teaching high school and a math major on a trading desk have the same major on their diplomas,, but very different expected earnings.
+- **Your specific major.** Our categories are broad. "Computers & Mathematics" lumps software engineers in with statisticians and pure mathematicians.
+- **Graduate school**, internships and work experience can affect future earnings.
+- **Hours, negotiation, and plain luck.**
+
+## Conclusions: The Bottom Line
+
+Here is what we would tell that student awake at 2 a.m.
+
+1. **Your major is the big decision.** The gap between the highest-paying and lowest-paying fields is about `r usd(top_vs_bottom$Estimate, to = 1000)` a year. Nothing else we measured comes close. Be concious about what you choose to study, but pick something that has meaning for you (and you can stand doing).
+2. **Grades help, but they are not worth your health.** A full GPA point increases expected salary by only `r usd(avg_slope$Estimate)` a year on average, and less than that in some fields. A tenth of a point is lunch money.
+3. **Women earn less than men with the same major and the same grades,** by about `r usd(avg_gap$Estimate)` a year on average, and the gap is larger in some fields than others. Whatever your field, look up what people in your role are paid before you negotiate.
+4. **You are not a statistic.** Even knowing your major, GPA, and sex, our best guess at your salary is typically off by about `r usd(cv_rmse)`, and sometimes by a good deal more. Where you go, what you do with the degree, and a bit of luck still write a big part of the story.
+
+Now close the laptop and get some sleep.

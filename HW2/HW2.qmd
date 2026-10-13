@@ -11,13 +11,14 @@ suppressPackageStartupMessages(library('gamlss'))
 suppressPackageStartupMessages(library('lmtest'))
 suppressPackageStartupMessages(library('dplyr'))
 web <- read.csv('website.csv')
+web$AdType <- as.factor(web$AdType)
 ```
 
 # HW 2.1
 
 ### (a)
 
-```{r}
+```{r 2_1_1}
 p11 <- ggplot(web, aes(x = Budget, y = Visits)) +
     geom_point() + 
     geom_smooth(method = "lm", se = TRUE) 
@@ -27,7 +28,7 @@ p11
 
 ### (b)
 
-```{r}
+```{r 2_1_2_1}
 p12 <- ggplot(web, aes(x = Visits, y = AdType, fill = AdType)) +
     geom_violin(draw_quantiles=c(0.25, .5, .75))
 p12
@@ -35,13 +36,13 @@ p12
 
 Plotted together
 
-```{r}
+```{r 2_1_2_2}
 p11 + p12
 ```
 
 ### (c)
 
-```{r}
+```{r 2_1_3}
 mod_budget <- lm(Visits ~ Budget, data = web)
 mod_adtype <- lm(Visits ~ AdType, data = web)
 mod_full <- lm(Visits ~ Budget + AdType, data = web)
@@ -56,11 +57,11 @@ AdType does appear to be significant. Budget does not appear to be significant.
 ### (d)
 
 Linearity
-```{r}
+```{r 2_1_4_1}
 car::avPlots(mod_full, terms = ~Budget)
 ```
 
-```{r}
+```{r 2_1_4_2}
 p141 <- ggplot(web, aes(x = (Budget - mean(Budget)), y = (Visits - mean(Visits)))) + 
     geom_point() + 
     labs(x = "Adjusted Budget", y = "Adjusted Visits")
@@ -75,7 +76,7 @@ p141 / (p142 + p143)
 
 ### (e)
 
-```{r}
+```{r 2_1_5}
 p151 <- ggplot(web, aes(x = log(Budget), y = Visits)) +
     geom_point() + 
     geom_smooth() 
@@ -97,19 +98,19 @@ p154 <- ggplot(web, aes(x = sqrt(Budget), y = log(Visits))) +
 
 ### (a)
 
-```{r}
+```{r 2_2_1_1}
 gam_mod <- gamlss(Visits ~ Budget + AdType, sigma.formula = ~ Budget, data = web)
 ```
 
 Estimates for the $\beta$s
 
-```{r}
+```{r 2_2_1_2}
 coef(gam_mod, what = "mu") # Mean model coefficients (betas) 
 ```
 
 Estimates for $\theta_0$ and $\theta_1$
 
-```{r}
+```{r 2_2_1_3}
 coef(gam_mod, what = "sigma") # Variance model coefficients 
 ```
 
@@ -118,7 +119,7 @@ coef(gam_mod, what = "sigma") # Variance model coefficients
 
 I added in a grid to start over to demonstrate the change point where it starts converging to the different peaks. 
 
-```{r}
+```{r 2_2_2}
 multi_modal <- function(x) {
     # Parameters for the first peak
     mean1 <- -2
@@ -146,13 +147,13 @@ ggplot(NULL, aes(x = start, y = end)) +
 
 ### (a)
 
-```{r}
+```{r 2_3_1}
 car::avPlots(mod_full, terms = ~Budget)
 ```
 
 ### (b)
 
-```{r}
+```{r 2_3_2}
 resids <- residuals(gam_mod)
 resids <- as.data.frame(x = resids)
 ggplot(data = resids, aes(x=resids)) + 
@@ -163,7 +164,7 @@ ks.test(resids$resids, "pnorm")
 
 ### (c)
 
-```{r}
+```{r 2_3_3}
 res_squared <- residuals(gam_mod)^2
 aux_mod <- lm(res_squared ~ Budget + AdType, data = web)
 
@@ -180,13 +181,14 @@ ggplot(NULL, aes(x = fits, y = resids$resids)) +
 
 ### (d)
 
-```{r}
-Rsq(gam_mod, type = c("Cox Snell"))
+```{r 2_3_4}
+# R-squared-ish formula
+cor(web$Visits, fitted(gam_mod, what = "mu"))^2
 ```
 
 ### (e)
 
-```{r}
+```{r 2_3_5}
 cross_validate <- function(fold_num) { 
     train_dt <- web[folds != fold_num, ]
     val_dt <- web[folds == fold_num, ]
@@ -208,3 +210,72 @@ rmse_results <- sapply(1:K, FUN=cross_validate)
 ggplot() + 
     geom_density(mapping=aes(x=rmse_results))
 ```
+
+# HW 2.4
+
+### (a)
+
+```{r 2_4_1_1}
+mod <- gamlss(formula = Visits ~ Budget + AdType, sigma.formula = ~Budget, data = web)
+summary(mod)
+```
+
+Looking at the initial summary output, we see that the p-value for Budget is almost 0 (< 2e-16). Due to this, we conclude that Budget does have a significant effect on the number of visists. 
+
+```{r 2_4_1_2}
+mu_cis <- confint(mod, what = "mu", level = 0.95)
+
+# Convert it into a clean table structure
+mu_cis_table <- data.frame(
+  Beta_Estimate = coef(mod, what = "mu"),
+  "2.5%"      = mu_cis[, 1],
+  "97.5%"      = mu_cis[, 2]
+)
+
+print(mu_cis_table)
+```
+
+### (b) 
+
+```{r 2_4_2}
+mod_no_ad <- gamlss(formula = Visits ~ Budget, sigma.formula = ~Budget, data = web)
+LR.test(mod_no_ad, mod)
+```
+
+Due to the p-value of .94 we conclude that the reduced model performs as well as the full model, implying that AdType does not have a significant effect on the number of visits. 
+
+### (c)
+
+```{r 2_4_3}
+sigma_cis <- confint(mod, what = "sigma", level = 0.95)
+sigma_cis
+```
+
+### (d)
+
+```{r 2_4_4}
+budget_vals <- min(web$Budget):max(web$Budget)
+pred_vals <- data.frame(Budget = budget_vals)
+
+budget_preds <- predictAll(mod_no_ad, data = web, newdata = pred_vals, type = "response")
+
+lower_90 <- qNO(0.05, mu = budget_preds$mu, sigma = budget_preds$sigma)
+upper_90 <- qNO(0.95, mu = budget_preds$mu, sigma = budget_preds$sigma)
+
+# 3. Combine them into a clean data frame with your predictions
+budget_intervals <- data.frame(
+    budget = budget_vals,
+    fit   = budget_preds$mu,
+    lower = lower_90,
+    upper = upper_90
+)
+
+ggplot(data = budget_intervals, aes(x = budget, y = fit)) + 
+    geom_point(data = web, aes(x = Budget, y = Visits), color = "black") + 
+    geom_line(color = "red", lwd = 2) +
+    geom_line(aes(y = lower), color = "blue", lwd = 2) +
+    geom_line(aes(y = upper), color = "blue", lwd = 2) + 
+    labs(x = "Budget", y = "Visits") +
+    theme_minimal()
+```
+

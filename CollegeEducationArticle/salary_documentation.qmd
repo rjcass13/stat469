@@ -1,0 +1,418 @@
+---
+title: "Supporting Documentation: College Graduate Salary Analysis"
+subtitle: "Internal notes for fellow analysts: the model, its validation, and the code behind the article"
+author: "Bracken Sant, RJ Cass, and Tyler Barlow"
+date: today
+date-format: "MMMM D, YYYY"
+format:
+  pdf:
+    documentclass: article
+    geometry: margin=0.6in
+    fontsize: 10pt
+    number-sections: true
+    toc: false
+    fig-pos: 'H'
+    keep-tex: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: cairo_pdf
+    fig.align: center
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-5em}
+  - \AtBeginDocument{\fvset{fontsize=\footnotesize}}
+---
+
+In the Glassdoor article, one linear regression model backs every section; the article's `.qmd` fits the model and pulls all provided numbers directly from it. This documentation follows this structure: **Section 1:** the model and its validation. **Section 2:** how each article section uses it. **Section 3:** the code.
+
+```{r setup}
+# ==== Section 1.1: data, the model, and helpers ====
+library(dplyr); library(ggplot2); library(patchwork)
+
+# Data: one row per graduate. Factor levels are alphabetical, so the baselines in X
+# are "Agriculture & Natural Resources" and "F".
+dat <- vroom::vroom("Salary.csv", show_col_types = FALSE) |>
+  mutate(MajorCategory = factor(MajorCategory), Sex = factor(Sex, levels = c("F", "M")))
+
+majors    <- levels(dat$MajorCategory)
+n_major   <- as.numeric(table(dat$MajorCategory))
+w         <- n_major / sum(n_major)       # each major's share of graduates
+our_major <- "Computers & Mathematics"    # statistics falls in this category
+gpa_ref   <- 3.3                          # typical GPA used for comparisons (mean = 3.30)
+
+# The one model behind the whole article
+f_final <- Salary ~ MajorCategory * GPA + MajorCategory * Sex
+fit     <- lm(f_final, data = dat)
+X       <- model.matrix(fit)              # the 773 x 48 design matrix of Section 1.1
+
+# Formatting helpers: numbers with commas, dollars for the text, "estimate (lower, upper)"
+# strings, and one table style (LaTeX booktabs, held in place, small font)
+comma  <- function(x) format(round(x), big.mark = ",", trim = TRUE)
+usd    <- function(x) paste0("\\$", comma(x))
+ci_usd <- function(d) sprintf("%s (%s, %s)", usd(d$Estimate), usd(d$Lower), usd(d$Upper))
+tbl <- function(x, caption, ...) {
+  caption <- gsub("%", "\\%", caption, fixed = TRUE)   # kable() does not escape captions
+  out <- knitr::kable(x, format = "latex", booktabs = TRUE, position = "H", linesep = "",
+                      label = NA, caption = caption, ...)
+  knitr::asis_output(sub("\\centering", "\\centering\\small", out, fixed = TRUE))
+}
+
+# One look for every figure: blue = accent, orange = second series, gray = context
+blue <- "#2a78d6"; orange <- "#eb6834"; gray <- "#898781"
+theme_doc <- function() {
+  theme_minimal(base_size = 8) +
+    theme(panel.grid.minor = element_blank(), legend.position = "top",
+          legend.margin = margin(0, 0, 0, 0), legend.box.spacing = unit(2, "pt"),
+          plot.title = element_text(size = 8.5, face = "bold"),
+          strip.text = element_text(size = 7, face = "bold"))
+}
+```
+
+# Modeling
+
+## The model
+
+`r nrow(dat)` graduates, `r length(majors)` major categories, no missing values. We fit the model $\mathbf{y} \sim \mathcal{N}(\mathbf{X}\boldsymbol{\beta}, \sigma^2\mathbf{I})$ with $\mathbf{y}$ the $`r nrow(X)` \times 1$ vector of salaries and $\mathbf{X}$ the $`r nrow(X)` \times `r ncol(X)`$ matrix shown in Table 1. For graduate $i$ in major $m$:
+
+$$
+\text{Salary}_i = \beta_0 + \alpha_{m} + (\beta_{\text{GPA}} + \gamma_{m})\,\text{GPA}_i + (\beta_{\text{M}} + \delta_{m})\, I(\text{Sex}_i = \text{M}) + \varepsilon_i,\qquad \varepsilon_i \overset{iid}{\sim} \mathcal{N}(0, \sigma^2)
+$$
+
+\begingroup\small
+
+| Columns of $\mathbf{X}$ | Count | Contents | Coefficient |
+|:-------------|:---:|:-------------------------------|:--------:|
+| Intercept | 1 | a column of ones | $\beta_0$ |
+| Major indicators | 15 | $I(\text{Major}_i = m)$; baseline is Agriculture & Natural Resources | $\alpha_m$ |
+| GPA | 1 | the graduate's GPA (quantitative, not centered) | $\beta_{\text{GPA}}$ |
+| Male indicator | 1 | $I(\text{Sex}_i = \text{M})$; baseline is F | $\beta_{\text{M}}$ |
+| Major $\times$ GPA | 15 | $I(\text{Major}_i = m) \times \text{GPA}_i$ | $\gamma_m$ |
+| Major $\times$ Male | 15 | $I(\text{Major}_i = m) \times I(\text{Sex}_i = \text{M})$ | $\delta_m$ |
+
+: The 48 columns of the design matrix $\mathbf{X}$ ($\alpha_m = \gamma_m = \delta_m = 0$ for the baseline major).
+
+\endgroup
+
+```{r model-picture, fig.width=7.5, fig.height=2.9, fig.cap="The fitted model. Each major has its own intercept, its own GPA slope, and its own gap between the lines for men and women. The two lines in a panel are parallel because there is no GPA by Sex term."}
+# ==== Figure 1: the fitted model, one panel per major ====
+# Majors ranked by the model's mean salary at GPA 3.3 (women and men averaged);
+# the same order is used again in Figure 4
+ref_mean    <- function(sex) predict(fit, data.frame(MajorCategory = majors, Sex = sex, GPA = gpa_ref))
+major_order <- majors[order(-(ref_mean("F") + ref_mean("M")) / 2)]
+
+dat |>
+  mutate(Fitted = fitted(fit), Major = factor(MajorCategory, levels = major_order),
+         Sex = factor(ifelse(Sex == "F", "Women", "Men"), levels = c("Women", "Men"))) |>
+  ggplot(aes(GPA, Salary / 1000, color = Sex)) +
+  geom_point(alpha = 0.3, size = 0.3) +                       # the graduates
+  geom_line(aes(y = Fitted / 1000), linewidth = 0.6) +        # the fitted line for each sex
+  facet_wrap(~ Major, nrow = 2, labeller = label_wrap_gen(width = 16)) +
+  scale_color_manual(values = c(Women = blue, Men = orange)) +
+  labs(x = "GPA", y = "Salary ($1,000s)", color = NULL) +
+  theme_doc()
+```
+
+The two quantities the article leans on: the **GPA slope** in major $m$,
+$\beta_{\text{GPA}} + \gamma_m$, and the **men-minus-women gap** in major $m$,
+$\beta_{\text{M}} + \delta_m$.
+
+## Choosing the terms: nested F-tests
+
+```{r ftests}
+# ==== Section 1.2: nested F-tests ====
+# One nested F-test (reduced vs full model) as a table row
+nested_f <- function(test, reduced, full = f_final) {
+  a <- anova(lm(reduced, data = dat), lm(full, data = dat))
+  data.frame(Test = test, df1 = a$Df[2], df2 = a$Res.Df[2], F = a$F[2], p = a$`Pr(>F)`[2])
+}
+ftests <- rbind(
+  # A-E: which terms belong in the model?
+  nested_f("A. Same GPA slope in every major (drop Major:GPA)", Salary ~ GPA + MajorCategory * Sex),
+  nested_f("B. Same sex gap in every major (drop Major:Sex)", Salary ~ MajorCategory * GPA + Sex),
+  nested_f("C. GPA slope differs by sex (add GPA:Sex)", f_final, update(f_final, . ~ . + GPA:Sex)),
+  nested_f("D. Full three-way model (add GPA:Sex and Major:GPA:Sex)", f_final,
+           Salary ~ MajorCategory * GPA * Sex),
+  nested_f("E. Curved GPA effect (add GPA squared)", f_final, update(f_final, . ~ . + I(GPA^2))),
+  # F-H: does each variable matter at all? (used in Section 2)
+  nested_f("F. No GPA effect (drop GPA and Major:GPA)", Salary ~ MajorCategory * Sex),
+  nested_f("G. No major effect (drop all 45 major terms)", Salary ~ GPA + Sex),
+  nested_f("H. No sex effect (drop Sex and Major:Sex)", Salary ~ MajorCategory * GPA)
+)
+ftests$Decision <- c("Keep Major:GPA", "Keep Major:Sex", "Leave out", "Leave out", "Leave out",
+                     "GPA matters", "Major matters", "Sex matters")
+
+# F statistics and p-values by letter, for the text and for Table 4
+Fv    <- setNames(ftests$F, LETTERS[1:8])
+pv    <- setNames(ftests$p, LETTERS[1:8])
+fmt_p <- function(p) sapply(p, function(v) format(signif(v, 2)))
+ftxt  <- function(l) sprintf("F = %.2f, p = %s", Fv[[l]], fmt_p(pv[[l]]))
+
+ftests |>
+  mutate(F = sprintf("%.2f", F), p = fmt_p(p)) |>
+  tbl("Nested F-tests against the final model. A to E chose the terms; F to H test each variable overall.",
+      align = "lrrrrl")
+```
+
+A and B are significant, but modest next to the main effects (F to H). The article is worded that way.
+
+## Checking the assumptions (LINE)
+
+```{r diagnostics, fig.width=7.5, fig.height=1.7, fig.cap="Residual diagnostics for the final model."}
+# ==== Section 1.3: assumption checks ====
+diag_df <- data.frame(fitted = fitted(fit), resid = resid(fit), GPA = dat$GPA,
+                      std_resid = MASS::stdres(fit))      # standardized residuals
+bp_test <- lmtest::bptest(fit)                            # Breusch-Pagan, H0: equal variance
+ks_test <- ks.test(diag_df$std_resid, "pnorm")            # Kolmogorov-Smirnov, H0: normal
+
+# Residuals against x with a loess curve: a flat curve on zero means a straight line is enough
+resid_plot <- function(x, xlab, title) {
+  ggplot(diag_df, aes({{ x }}, resid)) +
+    geom_point(color = gray, alpha = 0.4, size = 0.5) +
+    geom_hline(yintercept = 0, color = "grey20", linewidth = 0.3) +
+    geom_smooth(se = FALSE, method = "loess", color = blue, linewidth = 0.7) +
+    scale_x_continuous(labels = scales::label_comma()) +
+    scale_y_continuous(labels = scales::label_comma()) +
+    labs(title = title, x = xlab, y = "Residual ($)") +
+    theme_doc()
+}
+# Histogram of standardized residuals with the N(0, 1) density on top
+p_hist <- ggplot(diag_df, aes(std_resid)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = gray, color = "white",
+                 linewidth = 0.2) +
+  stat_function(fun = dnorm, color = blue, linewidth = 0.7) +
+  labs(title = "Standardized residuals vs N(0, 1)", x = "Standardized residual", y = "Density") +
+  theme_doc()
+
+resid_plot(fitted, "Fitted salary ($)", "Residuals vs fitted") +
+  resid_plot(GPA, "GPA", "Residuals vs GPA") + p_hist
+```
+
+\begingroup\small
+
+| Assumption | Evidence | Verdict |
+|:---------|:------------------------------------|:------------------------|
+| **L**inearity | Residuals vs GPA flat above GPA 2 (middle); GPA$^2$ test E, $p = `r fmt_p(pv[["E"]])`$ | Holds (thin below GPA 2: `r sum(dat$GPA < 2)` graduates) |
+| **I**ndependence | One ACS respondent per row; no household or employer identifiers | Assumed by design; not testable here |
+| **N**ormality | Histogram follows N(0, 1) (right); KS test $p = `r round(ks_test$p.value, 2)`$ | Holds |
+| **E**qual variance | No fanning (left); Breusch-Pagan $p = `r round(bp_test$p.value, 2)`$ | Holds; results stay in dollars |
+| Influence | Largest Cook's distance `r round(max(cooks.distance(fit)), 3)`; high leverage only where $n = 11, 13$ | No concern; explains wide intervals in tiny majors |
+
+\endgroup
+\addtocounter{table}{-1}
+
+## Validating predictions: 10-fold cross-validation
+
+```{r cv, fig.width=7.5, fig.height=1.8, fig.cap="Final model, predicting graduates it had not seen (10-fold cross-validation). Orange points fell outside their 95% prediction interval; orange lines mark the average interval half-width."}
+# ==== Section 1.4: 10-fold cross-validation of the predictions ====
+set.seed(469)
+k     <- 10
+folds <- sample(cut(seq(1, nrow(dat)), breaks = k, labels = FALSE))   # random fold labels
+# Each training set must keep every Major x Sex cell, or it could not estimate all 48 betas
+stopifnot(sapply(1:k, function(i) all(table(dat$MajorCategory[folds != i], dat$Sex[folds != i]) > 0)))
+
+# Out-of-sample predictions with 95% prediction intervals: fit on k - 1 folds, predict the other
+cv_predict <- function(form) {
+  out <- lapply(1:k, function(i) {
+    f <- lm(form, data = dat[folds != i, ])
+    cbind(Salary = dat$Salary[folds == i],
+          predict(f, newdata = dat[folds == i, ], interval = "prediction", level = 0.95))
+  })
+  as.data.frame(do.call(rbind, out))
+}
+# RMSE = typical miss, Bias = systematic over/under, Coverage = share of held-out salaries
+# inside the 95% interval (want 0.95), Width = average interval width, R2 = out-of-sample R^2
+cv_summary <- function(model, cv) {
+  data.frame(Model = model, RMSE = sqrt(mean((cv$Salary - cv$fit)^2)), Bias = mean(cv$fit - cv$Salary),
+             Coverage = mean(cv$Salary >= cv$lwr & cv$Salary <= cv$upr), Width = mean(cv$upr - cv$lwr),
+             R2 = 1 - sum((cv$Salary - cv$fit)^2) / sum((cv$Salary - mean(cv$Salary))^2))
+}
+cv_pred  <- cv_predict(f_final)            # held-out predictions from the final model
+cv_table <- rbind(
+  cv_summary("Additive: GPA + Major + Sex", cv_predict(Salary ~ GPA + MajorCategory + Sex)),
+  cv_summary("Final: Major x GPA + Major x Sex", cv_pred),
+  cv_summary("Three-way: Major x GPA x Sex", cv_predict(Salary ~ MajorCategory * GPA * Sex)))
+cv_final <- cv_table[2, ]
+
+# Left: held-out salary vs prediction, flagged by whether it fell inside its 95% interval.
+# Right: the held-out errors, with the average interval half-width marked.
+cv_pred <- cv_pred |>
+  mutate(error = Salary - fit, Interval = ifelse(Salary >= lwr & Salary <= upr, "Inside", "Outside"))
+half <- mean(cv_pred$upr - cv_pred$fit)
+p_cv <- ggplot(cv_pred, aes(fit, Salary, color = Interval)) +
+  geom_abline(slope = 1, intercept = 0, color = "grey20", linewidth = 0.3) +
+  geom_point(alpha = 0.7, size = 0.6) +
+  scale_color_manual(values = c(Inside = gray, Outside = orange), guide = "none") +
+  scale_x_continuous(labels = scales::label_comma()) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(title = sprintf("Held-out salaries: %.1f%% inside their 95%% intervals", 100 * cv_final$Coverage),
+       x = "Predicted salary ($)", y = "Actual salary ($)") +
+  theme_doc()
+p_err <- ggplot(cv_pred, aes(error)) +
+  geom_histogram(bins = 35, fill = gray, color = "white", linewidth = 0.2) +
+  geom_vline(xintercept = c(-half, half), color = orange, linewidth = 0.5) +
+  geom_vline(xintercept = 0, color = "grey20", linewidth = 0.3) +
+  scale_x_continuous(labels = scales::label_comma()) +
+  labs(title = paste0("Held-out errors, centered on zero (lines at +/- ", comma(half), ")"),
+       x = "Actual minus predicted ($)", y = "Graduates") +
+  theme_doc()
+p_cv + p_err
+```
+
+```{r cv-table}
+
+# Table 3: the same summaries for the final model and two competitors
+tbl(cv_table, "10-fold cross-validated prediction performance (same folds for every model).",
+    digits = c(0, 0, 0, 3, 0, 3), format.args = list(big.mark = ","))
+```
+
+- **The prediction intervals are safe to quote.** Out-of-sample RMSE `r usd(cv_final$RMSE)` vs
+  in-sample $s =$ `r usd(sigma(fit))`; bias near zero; 95% intervals cover
+  `r sprintf("%.1f", 100 * cv_final$Coverage)`% of held-out salaries.
+- **The interactions do not improve prediction.** The additive model predicts just as well. They
+  stay because the article must say whether effects differ by major, and tests A and B say they do.
+
+# How the model backs each section of the article
+
+Every estimate is a linear combination $\mathbf{a}'\hat{\boldsymbol\beta} \pm t_{0.975,\,n-p}\, s
+\sqrt{\mathbf{a}'(\mathbf{X}'\mathbf{X})^{-1}\mathbf{a}}$ from `multcomp::glht()`. Each $\mathbf{a}$
+is built from rows of $\mathbf{X}$ for hypothetical graduates; the sex gap, for example, is (row for
+a man) minus (row for a woman) with the same major and GPA.
+
+```{r contrasts, fig.width=7.5, fig.height=3, fig.cap="Estimates by major with 95% confidence intervals, in dollars (number of graduates in parentheses; our major in blue). In the slope and gap panels, the dark line is zero and the orange line is the sample-weighted average over majors."}
+# ==== Section 2: contrasts, confidence intervals, and the prediction example ====
+# Row(s) of X for hypothetical graduates; each contrast below is a difference or average of rows
+xrow <- function(major, sex, gpa) {
+  newdata <- data.frame(MajorCategory = factor(major, levels = majors),
+                        Sex = factor(sex, levels = c("F", "M")), GPA = gpa)
+  model.matrix(delete.response(terms(fit)), newdata)
+}
+# Estimate and ordinary (one-at-a-time) 95% t interval for each row a' of K
+lin_combo <- function(K, label) {
+  ci <- confint(multcomp::glht(fit, linfct = K), calpha = multcomp::univariate_calpha())$confint
+  data.frame(Label = label, Estimate = ci[, "Estimate"], Lower = ci[, "lwr"], Upper = ci[, "upr"],
+             row.names = NULL)
+}
+K_slope <- xrow(majors, "F", 1) - xrow(majors, "F", 0)                    # beta_GPA + gamma_m
+K_gap   <- xrow(majors, "M", gpa_ref) - xrow(majors, "F", gpa_ref)        # beta_M + delta_m
+K_mean  <- (xrow(majors, "F", gpa_ref) + xrow(majors, "M", gpa_ref)) / 2  # mean salary at GPA 3.3
+
+slopes      <- lin_combo(K_slope, majors) |> mutate(n = n_major)
+gaps        <- lin_combo(K_gap, majors)   |> mutate(n = n_major)
+major_means <- lin_combo(K_mean, majors)  |> mutate(n = n_major)
+avg_slope   <- lin_combo(t(w) %*% K_slope, "Average slope")   # sample-weighted over majors
+avg_gap     <- lin_combo(t(w) %*% K_gap, "Average gap")       # sample-weighted over majors
+top <- which.max(major_means$Estimate); bottom <- which.min(major_means$Estimate)
+top_vs_bottom <- lin_combo(K_mean[top, , drop = FALSE] - K_mean[bottom, , drop = FALSE], "Top - bottom")
+
+# Our major: mean salary for women and for men at GPA 3.3, and the gap between them
+ours_f   <- lin_combo(xrow(our_major, "F", gpa_ref), "Women")
+ours_m   <- lin_combo(xrow(our_major, "M", gpa_ref), "Men")
+ours_gap <- gaps[majors == our_major, ]
+
+# The same 16 gaps with simultaneous (family-wise 95%) intervals, to gauge multiplicity
+set.seed(469)                              # the adjusted critical value is simulated
+adj_lwr <- confint(multcomp::glht(fit, linfct = K_gap))$confint[, "lwr"]
+
+# Prediction example (article Section 5) and R-squared of the pieces
+example <- data.frame(MajorCategory = our_major, Sex = "F", GPA = 3.5)
+ex_pi   <- predict(fit, example, interval = "prediction", level = 0.95)   # one new graduate
+r2      <- function(form) summary(lm(form, data = dat))$r.squared
+
+# Figure 4: the three sets of estimates side by side, majors ranked by mean salary
+forest <- bind_rows("GPA slope (per GPA point)" = slopes, "Mean salary at GPA 3.3" = major_means,
+                    "Men minus women gap" = gaps, .id = "panel") |>
+  mutate(panel = factor(panel, levels = unique(panel)),
+         Major = reorder(paste0(Label, " (", n, ")"), -match(Label, major_order)),
+         ours  = ifelse(Label == our_major, "ours", "other")) |>
+  group_by(panel) |>
+  mutate(label_x = max(Upper) + 0.03 * (max(Upper) - min(Lower))) |>   # where the numbers go
+  ungroup()
+refs <- data.frame(panel = factor(levels(forest$panel)[c(1, 3)], levels = levels(forest$panel)),
+                   zero = 0, average = c(avg_slope$Estimate, avg_gap$Estimate))
+
+ggplot(forest, aes(y = Major, color = ours)) +
+  geom_vline(data = refs, aes(xintercept = zero), color = "grey20", linewidth = 0.3,
+             inherit.aes = FALSE) +
+  geom_vline(data = refs, aes(xintercept = average), color = orange, linewidth = 0.4,
+             inherit.aes = FALSE) +
+  geom_linerange(aes(xmin = Lower, xmax = Upper), linewidth = 0.5) +
+  geom_point(aes(x = Estimate), size = 1.2) +
+  geom_text(aes(x = label_x, label = comma(Estimate)), hjust = 0, size = 2.1, color = "grey20") +
+  facet_wrap(~ panel, nrow = 1, scales = "free_x") +
+  scale_color_manual(values = c(ours = blue, other = "grey40"), guide = "none") +
+  scale_x_continuous(labels = \(x) ifelse(x == 0, "$0", scales::dollar(x / 1000, suffix = "k")),
+                     expand = expansion(mult = c(0.03, 0.2))) +
+  labs(x = NULL, y = NULL) +
+  theme_doc() + theme(panel.grid.major.y = element_blank())
+```
+
+\begingroup\small
+
+| The article says | Model quantity or hypothesis | How | Result |
+|:-------------------------|:-----------------------------|:-------------------|:---------------------------|
+| **Section 2: GPA** | | | |
+| GPA matters | $H_0$: $\beta_{\text{GPA}} = 0$ and every $\gamma_m = 0$ | F-test F | `r ftxt("F")` |
+| "About `r usd(round(avg_slope$Estimate, -2))` per GPA point" | $\sum_m w_m(\beta_{\text{GPA}} + \gamma_m)$, with $w_m$ = major's share of graduates | Contrast, 95% CI | `r ci_usd(avg_slope)` |
+| The payoff differs by major | $H_0$: every $\gamma_m = 0$; slopes $\beta_{\text{GPA}} + \gamma_m$ | F-test A; Figure 4, left | `r ftxt("A")` |
+| No need to be hyper-anxious | Judgment: slope vs the spread of salaries and vs the gap between majors | $s$; $R^2$ of GPA alone | $s =$ `r usd(sigma(fit))`; $R^2 =$ `r sprintf("%.3f", r2(Salary ~ GPA))` |
+| **Section 3: Majors** | | | |
+| Majors differ | $H_0$: all 45 major terms are 0 | F-test G | `r ftxt("G")` |
+| The ranking of majors | Mean at GPA `r gpa_ref`, women and men averaged: $\tfrac12[\mathbf{x}'(m, \text{F}) + \mathbf{x}'(m, \text{M})]\boldsymbol\beta$ | Contrasts, 95% CIs; Figure 4, middle | `r majors[top]` `r usd(major_means$Estimate[top])` down to `r majors[bottom]` `r usd(major_means$Estimate[bottom])` |
+| Top to bottom is "about `r usd(round(top_vs_bottom$Estimate, -2))`" | `r majors[top]` minus `r majors[bottom]` | Contrast, 95% CI | `r ci_usd(top_vs_bottom)`, or `r sprintf("%.1f", top_vs_bottom$Estimate / avg_slope$Estimate)` average GPA points |
+| **Section 4: Sex gap** | | | |
+| A gap exists within majors | $H_0$: $\beta_{\text{M}} = 0$ and every $\delta_m = 0$ | F-test H | `r ftxt("H")` |
+| The gap differs by major | $H_0$: every $\delta_m = 0$; gaps $\beta_{\text{M}} + \delta_m$ | F-test B; Figure 4, right | `r ftxt("B")` |
+| "About `r usd(round(avg_gap$Estimate, -2))` a year" on average | $\sum_m w_m(\beta_{\text{M}} + \delta_m)$ | Contrast, 95% CI | `r ci_usd(avg_gap)` |
+| Our major as the example | `r our_major`: means for women and men at GPA `r gpa_ref`, and their difference | Contrasts, 95% CI | Women `r usd(ours_f$Estimate)`, men `r usd(ours_m$Estimate)`; gap `r ci_usd(ours_gap)` |
+| **Section 5: Other factors** | | | |
+| "About `r round(100 * summary(fit)$r.squared)`%" of salary differences explained | $R^2$ (adjusted; cross-validated) | `summary(fit)`; Section 1.4 | `r sprintf("%.3f", summary(fit)$r.squared)` (`r sprintf("%.3f", summary(fit)$adj.r.squared)`; `r sprintf("%.3f", cv_final$R2)`) |
+| Major does most of the work | $R^2$ of each variable alone | Three one-variable fits | Major `r sprintf("%.3f", r2(Salary ~ MajorCategory))`, sex `r sprintf("%.3f", r2(Salary ~ Sex))`, GPA `r sprintf("%.3f", r2(Salary ~ GPA))` |
+| The salary range for one person | 95% *prediction* interval: a woman in our major with a 3.5 GPA | `predict(interval = "prediction")` | `r usd(ex_pi[1, "fit"])` (`r usd(ex_pi[1, "lwr"])`, `r usd(ex_pi[1, "upr"])`) |
+| "Typically off by about `r usd(round(cv_final$RMSE, -2))`"; ranges right "`r round(100 * cv_final$Coverage)`% of the time" | Cross-validated RMSE and interval coverage | Section 1.4 | `r usd(cv_final$RMSE)`; `r sprintf("%.1f", 100 * cv_final$Coverage)`% |
+
+: Where each claim in the article comes from.
+
+\endgroup
+
+**Caveats we wrote into the article**
+
+- **Association, not causation.** The slopes compare different graduates; the article says "goes
+  with", not "causes".
+- **Small majors are fuzzy.** Several slope intervals include zero, so the article warns against
+  reading much into any one small major. Majors are described in tiers; we did not run all 120
+  pairwise comparisons.
+- **Multiplicity.** The gap intervals are one-at-a-time: `r sum(gaps$Lower > 0)` of 16 exclude
+  zero, but only `r sum(adj_lwr > 0)` do with `multcomp`'s simultaneous adjustment, and our own
+  major's then crosses zero. The article gives its estimate and range without calling it proven.
+- **The gap is not "unequal pay for identical work."** It conditions on major and GPA only, not on
+  job, industry, hours, or location. It is the same at every GPA (test C,
+  $p = `r fmt_p(pv[["C"]])`$). The list of other factors in Section 5 is subject-matter reasoning.
+
+# Code
+
+All of the code behind this document, in the order it runs. The article's own figures are drawn in
+`salary_blog.qmd` from this same model and these same estimates.
+
+```{r show-setup, ref.label="setup", echo=TRUE, eval=FALSE}
+```
+
+```{r show-model-picture, ref.label="model-picture", echo=TRUE, eval=FALSE}
+```
+
+```{r show-ftests, ref.label="ftests", echo=TRUE, eval=FALSE}
+```
+
+```{r show-diagnostics, ref.label="diagnostics", echo=TRUE, eval=FALSE}
+```
+
+```{r show-cv, ref.label=c("cv", "cv-table"), echo=TRUE, eval=FALSE}
+```
+
+```{r show-contrasts, ref.label="contrasts", echo=TRUE, eval=FALSE}
+```
